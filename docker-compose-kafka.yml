@@ -1,0 +1,169 @@
+# docker-compose-kafka.yml
+version: '1.0'
+
+services:
+  ##################################            CONFLUENT | KAFKA | ZOOKEEPER
+  zookeeper:
+    image: confluentinc/cp-zookeeper:6.1.4
+    restart: unless-stopped
+#    logging:
+#      driver: none
+    environment:
+      ZOOKEPEER_LOG4J_ROOT_LOGLEVEL: WARN
+      ZOOKEPEER_LOG4J_TOOLS_ROOT_LOGLEVEL: WARN
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: nc -z localhost 2181 || exit 1
+      interval: 3s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+
+  kafka:
+    image: confluentinc/cp-kafka:6.1.4
+    restart: unless-stopped
+#    logging:
+#      driver: none
+    ports:
+      - '9092:9092'
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_LOG4J_ROOT_LOGLEVEL: WARN
+      KAFKA_LOG4J_TOOLS_ROOT_LOGLEVEL: WARN
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Option advertised.listeners {name://host:port} used so someone can access kafka outside of container\cluster.
+      # 'kafka:29092' used by clickhouse-server inside docker-compose network, when 'localhost:9092' is used by containers inside network.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: nc -z localhost 9092 || exit 1
+      interval: 3s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+
+  kafka-rest:
+    image: confluentinc/cp-kafka-rest:6.1.4
+    restart: unless-stopped
+#    logging:
+#      driver: none
+    ports:
+      - '8083:8083'
+    depends_on:
+      - zookeeper
+      - schema-registry
+    environment:
+      KAFKA_REST_ROOT_LOGLEVEL: WARN
+      KAFKA_REST_LOG4J_TOOLS_ROOT_LOGLEVEL: WARN
+      KAFKA_REST_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_REST_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_REST_LISTENERS: http://kafka-rest:8083
+      KAFKA_REST_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      KAFKA_REST_HOST_NAME: kafka
+
+
+  kafka-topics:
+    image: landoop/kafka-topics-ui:0.9.4
+    restart: unless-stopped
+#    logging:
+#      driver: none
+    ports:
+      - '8000:8000'
+    depends_on:
+      - kafka
+      - kafka-rest
+      - schema-registry
+    environment:
+      KAFKA_REST_PROXY_URL: kafka-rest:8083
+      PROXY: 'true'
+
+
+  ksql-server:
+    image: confluentinc/cp-ksql-server:5.4.6
+    restart: unless-stopped
+#    logging:
+#      driver: none
+    ports:
+      - '8088:8088'
+    depends_on:
+      - kafka
+      - schema-registry
+    environment:
+      KSQL_LOG4J_ROOT_LOGLEVEL: WARN
+      KSQL_LOG4J_TOOLS_ROOT_LOGLEVEL: WARN
+      KSQL_BOOTSTRAP_SERVERS: kafka:29092
+      KSQL_LISTENERS: http://ksql-server:8088
+      KSQL_KSQL_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      KSQL_PRODUCER_INTERCEPTOR_CLASSES: io.confluent.monitoring.clients.interceptor.MonitoringProducerInterceptor
+      KSQL_CONSUMER_INTERCEPTOR_CLASSES: io.confluent.monitoring.clients.interceptor.MonitoringConsumerInterceptor
+
+
+  ksql-cli:
+    image: confluentinc/cp-ksql-cli:5.4.6
+    restart: unless-stopped
+#    logging:
+#      driver: none
+    depends_on:
+      - ksql-server
+    entrypoint: /bin/sh
+    tty: true
+
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:6.1.4
+    restart: unless-stopped
+#    logging:
+#      driver: none
+    ports:
+      - '8081:8081'
+    depends_on:
+      kafka:
+        condition: service_healthy
+      zookeeper:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_LOG4J_ROOT_LOGLEVEL: WARN
+      SCHEMA_REGISTRY_LOG4J_TOOLS_ROOT_LOGLEVEL: WARN
+      SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: zookeeper:2181
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://schema-registry:8081
+    healthcheck:
+      test: nc -z localhost 8081 || exit 1
+      interval: 3s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+
+  control-center:
+    image: confluentinc/cp-enterprise-control-center:6.1.4
+    restart: unless-stopped
+#    logging:
+#      driver: none
+    ports:
+      - '9021:9021'
+    depends_on:
+      - kafka
+      - schema-registry
+      - ksql-server
+    environment:
+      CONTROL_CENTER_ROOT_LOGLEVEL: WARN
+      CONTROL_CENTER_LOG4J_TOOLS_ROOT_LOGLEVEL: WARN
+      CONTROL_CENTER_BOOTSTRAP_SERVERS: kafka:29092
+      CONTROL_CENTER_ZOOKEEPER_CONNECT: zookeeper:2181
+      CONTROL_CENTER_KSQL_URL: http://ksql-server:8088
+      CONTROL_CENTER_KSQL_ADVERTISED_URL: http://ksql-server:8088
+      CONTROL_CENTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONTROL_CENTER_REPLICATION_FACTOR: 1
+      CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
+      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
+      CONFLUENT_METRICS_TOPIC_REPLICATION: 1
+      PORT: 9021
